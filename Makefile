@@ -464,6 +464,7 @@ KLZOP		= lzop
 LZMA		= lzma
 LZ4		= lz4c
 XZ		= xz
+DJW		= djw
 
 CHECKFLAGS     := -D__linux__ -Dlinux -D__STDC__ -Dunix -D__unix__ \
 		  -Wbitwise -Wno-return-void -Wno-unknown-attribute $(CF)
