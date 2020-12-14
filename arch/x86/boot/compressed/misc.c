@@ -450,6 +450,7 @@ asmlinkage __visible void *extract_kernel(void *rmode, memptr heap,
 	parse_elf(output);
 	handle_relocations(output, output_len, virt_addr);
 	debug_putstr("done.\nBooting the kernel.\n");
+    debug_putaddr(rdtsc());
 	return output;
 }
 
