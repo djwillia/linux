@@ -681,6 +681,7 @@ static __always_inline __nocfi unsigned int bpf_dispatcher_nop_func(
 	unsigned int (*bpf_func)(const void *,
 				 const struct bpf_insn *))
 {
+    //    printk(KERN_WARNING "DJW CALLING bpf_func at %p %d\n", bpf_func, __LINE__);
 	return bpf_func(ctx, insnsi);
 }
 #ifdef CONFIG_BPF_JIT
