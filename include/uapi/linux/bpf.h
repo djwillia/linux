@@ -1334,7 +1334,7 @@ union bpf_attr {
 			/* or valid module BTF object fd or 0 to attach to vmlinux */
 			__u32		attach_btf_obj_fd;
 		};
-		__u32		:32;		/* pad */
+		__u32		rustfd;		/* file descriptor of Rust Program */
 		__aligned_u64	fd_array;	/* array of FDs */
 	};
 
