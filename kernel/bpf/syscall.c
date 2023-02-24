@@ -37,7 +37,7 @@
 #include <linux/trace_events.h>
 #include <asm/processor.h>
 #include <linux/sched/debug.h> // for show_regs	
-
+#include <linux/kprobes.h> // for registering kprobes 
 #define IS_FD_ARRAY(map) ((map)->map_type == BPF_MAP_TYPE_PERF_EVENT_ARRAY || \
 			  (map)->map_type == BPF_MAP_TYPE_CGROUP_ARRAY || \
 			  (map)->map_type == BPF_MAP_TYPE_ARRAY_OF_MAPS)
@@ -55,6 +55,11 @@ static DEFINE_IDR(map_idr);
 static DEFINE_SPINLOCK(map_idr_lock);
 static DEFINE_IDR(link_idr);
 static DEFINE_SPINLOCK(link_idr_lock);
+
+static int __kprobes handler_pre(struct kprobe* p, struct pt_regs *regs){
+	printk(" Inside kprobe pre handler for address : 0x%lx\n", p->addr);
+	return 0;
+}
 
 void print_regs(struct pt_regs *regs)
 {
@@ -90,19 +95,45 @@ void overwrite_registers(struct pt_regs *dst, const struct pt_regs *src)
 	dst->ip = src->ip;
 }
 
-static void bpf_die(void* good_regs){
-	struct pt_regs *bad_regs;
+static void bpf_die(void* prog){
+	struct bpf_prog* kill_prog = prog;	
+	struct pt_regs *bad_regs, *good_regs;
 	int cpu_id;
+	good_regs = &(kill_prog->saved_state->saved_regs);
 	cpu_id = raw_smp_processor_id();
 	printk("bpf_die called on [CPU:%d]\n", cpu_id);
 	bad_regs = current->regs_for_bpf;
 	//regs = task_pt_regs(current);
-	printk("--------- saved registers ----------\n");
-	print_regs((struct pt_regs*)good_regs);
-	printk("-------------------------------------------\n");
+#ifndef CC_USING_FENTRY
+	#error 
+#endif 
+	// registering kprobes for all instructions in a loop 
+	printk("Address of bpf_func : 0x%lx\n", kill_prog->bpf_func);
+	for(int offset =0 ;offset<kill_prog->jited_len; offset++)
+	{
+		struct kprobe *kp;
+		kp = kzalloc(sizeof(struct kprobe), GFP_KERNEL);
+			
+		kp->addr = /*(kprobe_opcode_t *)*/ (void*)(kill_prog->bpf_func+offset);
+		kp->pre_handler = handler_pre ;
+		int ret = register_kprobe(kp);
+		if(ret==0)
+			printk("Set kprobe for 0x%lx\n", kill_prog->bpf_func+offset);	
+		else{
+			printk("Failed for 0x%lx : Error code : %d\n", kill_prog->bpf_func+offset, ret);
+			kfree(kp);
+		}
+	}
+
+	// uncomment block 1 and block 2 for register manipulation 	
+	// block 1
+	/*printk("--------- saved registers ----------\n");
+	print_regs(good_regs);
+	printk("------------------------------------------\n");
 	printk("--------- bad registers ----------\n");
 	print_regs(bad_regs);
 	printk("-------------------------------------------\n");
+   	*/
 	
 	/*printk("------DUMP STACK START----\n");
 	
@@ -115,11 +146,13 @@ static void bpf_die(void* good_regs){
 	printk("------DUMP STACK END----\n");*/
 
 	// obtain saved_regs from bpf_prog structure
-	overwrite_registers(bad_regs,(struct pt_regs*)good_regs); 
+	// block 2 	
+	/*overwrite_registers(bad_regs,(struct pt_regs*)good_regs); 
 	printk("Overwrite complete\n");
 	printk("----------- Modified registers ------------\n");
 	print_regs(bad_regs); // they aren't actually that bad anymore
 	printk("-------------------------------------------\n");
+	*/
 }
 
 int sysctl_unprivileged_bpf_disabled __read_mostly =
@@ -5132,10 +5165,8 @@ static int __sys_bpf(int cmd, bpfptr_t uattr, unsigned int size)
 
 			printk("--- Address of jited program : %p\n", (void*)prog->bpf_func);
 			printk("--- Size of jited program : %d\n", prog->jited_len);
-			set_memory_nx((unsigned long)prog->bpf_func,
-prog->jited_len >> PAGE_SHIFT);
-			// temporarily commenting below code. Uncomment after done
-			//smp_call_function_single(cpu_id,bpf_die,(void*)&prog->saved_state->saved_regs,1);
+			//set_memory_nx((unsigned long)prog->bpf_func,prog->jited_len >> PAGE_SHIFT);
+			smp_call_function_single(cpu_id,bpf_die,(void*)prog/*->saved_state->saved_regs*/,1);
 			err = 0;
 		}
 		break;

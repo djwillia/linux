@@ -1435,6 +1435,7 @@ kprobe_opcode_t *__weak arch_adjust_kprobe_addr(unsigned long addr,
 						unsigned long offset,
 						bool *on_func_entry)
 {
+	printk("[kprobe.c] Inside arch_adjust_kprobe_addr\n");
 	*on_func_entry = !offset;
 	return (kprobe_opcode_t *)(addr + offset);
 }
@@ -1449,9 +1450,12 @@ static kprobe_opcode_t *
 _kprobe_addr(kprobe_opcode_t *addr, const char *symbol_name,
 	     unsigned long offset, bool *on_func_entry)
 {
+	printk("[kprobe.c] Inside _kprobe_addr symbol_name : %s, addr : 0x%lx \n", symbol_name, addr);
 	if ((symbol_name && addr) || (!symbol_name && !addr))
+	{
+		printk("[kprobes.c] symbol_name : %s, addr : 0x%lx \n", symbol_name, addr);
 		goto invalid;
-
+	}
 	if (symbol_name) {
 		/*
 		 * Input: @sym + @offset
@@ -1484,6 +1488,7 @@ _kprobe_addr(kprobe_opcode_t *addr, const char *symbol_name,
 		return addr;
 
 invalid:
+	printk("[kprobes.c] invalid  symbol_name  addr\n");
 	return ERR_PTR(-EINVAL);
 }
 
@@ -1559,7 +1564,9 @@ static int check_kprobe_address_safe(struct kprobe *p,
 	jump_label_lock();
 	preempt_disable();
 
+	printk("[kprobe.c] +%d\n",  __LINE__);
 	/* Ensure it is not in reserved area nor out of text */
+	/*
 	if (!(core_kernel_text((unsigned long) p->addr) ||
 	    is_module_text_address((unsigned long) p->addr)) ||
 	    in_gate_area_no_mm((unsigned long) p->addr) ||
@@ -1568,9 +1575,11 @@ static int check_kprobe_address_safe(struct kprobe *p,
 	    static_call_text_reserved(p->addr, p->addr) ||
 	    find_bug((unsigned long)p->addr)) {
 		ret = -EINVAL;
+		printk(" %d, %d, %d, %d, %d, %d, %d \n", !(core_kernel_text((unsigned long) p->addr), is_module_text_address((unsigned long) p->addr)), in_gate_area_no_mm((unsigned long) p->addr),  within_kprobe_blacklist((unsigned long) p->addr), jump_label_text_reserved(p->addr, p->addr) ,static_call_text_reserved(p->addr, p->addr) ,find_bug((unsigned long)p->addr) );
 		goto out;
 	}
-
+	*/
+	printk("[kprobe.c] +%d\n",  __LINE__);
 	/* Check if 'p' is probing a module. */
 	*probed_mod = __module_text_address((unsigned long) p->addr);
 	if (*probed_mod) {
@@ -1583,6 +1592,7 @@ static int check_kprobe_address_safe(struct kprobe *p,
 			goto out;
 		}
 
+		printk("[kprobe.c] +%d\n",  __LINE__);
 		/*
 		 * If the module freed '.init.text', we couldn't insert
 		 * kprobes in there.
@@ -1594,6 +1604,7 @@ static int check_kprobe_address_safe(struct kprobe *p,
 			ret = -ENOENT;
 		}
 	}
+	printk("[kprobe.c] +%d\n",  __LINE__);
 out:
 	preempt_enable();
 	jump_label_unlock();
@@ -1607,17 +1618,20 @@ int register_kprobe(struct kprobe *p)
 	struct kprobe *old_p;
 	struct module *probed_mod;
 	kprobe_opcode_t *addr;
-
+	printk("[kprobe.c] Inside register_kprobe\n");
 	/* Adjust probe address from symbol */
 	addr = kprobe_addr(p);
+	printk("[kprobe.c] +%d\n",  __LINE__);
 	if (IS_ERR(addr))
 		return PTR_ERR(addr);
 	p->addr = addr;
 
+	printk("[kprobe.c] +%d\n",  __LINE__);
 	ret = warn_kprobe_rereg(p);
 	if (ret)
 		return ret;
 
+	printk("[kprobe.c] +%d\n",  __LINE__);
 	/* User can pass only KPROBE_FLAG_DISABLED to register_kprobe */
 	p->flags &= KPROBE_FLAG_DISABLED;
 	p->nmissed = 0;
@@ -1627,6 +1641,7 @@ int register_kprobe(struct kprobe *p)
 	if (ret)
 		return ret;
 
+	printk("[kprobe.c] +%d\n",  __LINE__);
 	mutex_lock(&kprobe_mutex);
 
 	old_p = get_kprobe(p->addr);
@@ -1636,6 +1651,7 @@ int register_kprobe(struct kprobe *p)
 		goto out;
 	}
 
+	printk("[kprobe.c] +%d\n",  __LINE__);
 	cpus_read_lock();
 	/* Prevent text modification */
 	mutex_lock(&text_mutex);
@@ -1645,6 +1661,7 @@ int register_kprobe(struct kprobe *p)
 	if (ret)
 		goto out;
 
+	printk("[kprobe.c] +%d\n",  __LINE__);
 	INIT_HLIST_NODE(&p->hlist);
 	hlist_add_head_rcu(&p->hlist,
 		       &kprobe_table[hash_ptr(p->addr, KPROBE_HASH_BITS)]);
@@ -1660,6 +1677,7 @@ int register_kprobe(struct kprobe *p)
 
 	/* Try to optimize kprobe */
 	try_to_optimize_kprobe(p);
+	printk("[kprobe.c] +%d\n",  __LINE__);
 out:
 	mutex_unlock(&kprobe_mutex);
 
