@@ -312,6 +312,7 @@ struct bpf_verifier_state {
 	u32 insn_idx;
 	u32 curframe;
 	u32 active_spin_lock;
+	u64 weight_so_far; // contains the overall weight of this state 
 	bool speculative;
 
 	/* first and last insn idx of this verifier state */
@@ -450,6 +451,7 @@ struct bpf_subprog_info {
 	bool tail_call_reachable;
 	bool has_ld_abs;
 	bool is_async_cb;
+	u64 weight;
 };
 
 /* single container for all structs
@@ -538,6 +540,7 @@ static inline struct bpf_func_state *cur_func(struct bpf_verifier_env *env)
 
 static inline struct bpf_reg_state *cur_regs(struct bpf_verifier_env *env)
 {
+	//printk("[cur_regs] function subprog number: %d\n", cur_func(env)->subprogno);
 	return cur_func(env)->regs;
 }
 

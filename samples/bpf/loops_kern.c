@@ -1,4 +1,3 @@
-#define KBUILD_MODNAME "foo"
 #include <linux/ptrace.h>
 #include <linux/version.h>
 #include <uapi/linux/bpf.h>
@@ -36,38 +35,11 @@ struct
 } 
 jmp_table SEC(".maps");
 
-/*
-int kpb_pre(struct kprobe *p, struct pt_regs *regs){
-	bpf_printk("Inside pre handler\n");
-	return 0;
-}
-
-int attach_kprobe(void)
-{
-    struct kprobe kp = {
-        .symbol_name = "runner5+0x1", // address of line to attach kprobe to
-        .pre_handler = kpb_pre,
-    };
-    int ret = register_kprobe(&kp);
-    if (ret < 0) {
-        bpf_printk("Failed to register kprobe\n");
-        return ret;
-    }
-    bpf_printk("Kprobe attached successfully\n");
-    return 0;
-}
-
-int detach_kprobe(void)
-{
-    unregister_kprobe(&kp);
-    return 0;
-}
-*/
-void do_reg_lookup()
+int do_reg_lookup() 
 {
         int *result;
 	static unsigned long rxx; // for fetching registers and saving later on
-  	for(int i=0;i<1000;i++){
+  	for(int i=0;i<10;i++){
 		
 		int id = bpf_get_numa_node_id();
 		bpf_printk("BPF : at NUMA node : %d\n", id);
@@ -79,19 +51,21 @@ void do_reg_lookup()
 			bpf_trace_printk("Not found\n", sizeof("Not found\n"));
 		
 	}
+	return 0;
 }
 
-void _populate_map()
+int  _populate_map()
 {
-	for(int i=0;i<10000;i++){
+	for(int i=0;i<10;i++){
 		int val = bpf_get_prandom_u32() % MAX_DICT_VAL;
 		const int key=bpf_get_prandom_u32() % MAX_DICT_SIZE;
 		bpf_map_update_elem(&my_map, &key, &val, BPF_ANY);
 	}
 	bpf_printk("Map populate complete..\n");
+	return 0;
 }
 
-static int runner(void* ctx)
+ noinline static int runner(void* ctx)
 {
 
 	//populate the map with 1000 random numbers
@@ -103,10 +77,10 @@ static int runner(void* ctx)
 	return 0;
 }
 
-static int runner2(void* ctx)
+noinline static int runner2(void* ctx)
 {
 
-	bpf_loop((1<<23), runner, NULL,0);
+	bpf_loop((1<<2), runner, NULL,0);
 	return 0;
 
 }
@@ -134,45 +108,34 @@ static int runner5(void* ctx)
 
 }
 
+int post_work();
+
+noinline int pre_work(){
+	int num = bpf_get_numa_node_id();
+	bpf_printk("Calling post_work()\n");
+	post_work();
+	bpf_printk("About to start running in node id#%d\n", num);
+	return 0;
+}
+
+noinline int post_work(){
+	int num = bpf_get_numa_node_id();
+	bpf_printk("Completing execution in node id#%d\n", num);
+	return 0;
+}
 SEC("tracepoint/syscalls/sys_exit_hello")
 int trace_sys_connect(struct pt_regs *ctx)
 {	
 	//bpf_printk("Inside trace_sys_connect\n");
-	//attach_kprobe();
-
-
-	//kp.pre_handler = kpb_pre;
-	//kp.addr = (kprobe_opcode_t*)runner5;
-	//register_kprobe(&kp);
-	//asm volatile("nop"); // marker instruction
-	bpf_printk("Inside trace_sys_connect\n");
+	bpf_printk("Inside trace_sys_connect v_1.3\n");
+	pre_work();
 	u32 iter = (1<<2);	
 	bpf_printk("Loop iteration count: %dk\n",iter);
-	bpf_loop(iter, runner, NULL,0);
-	//bpf_printk("Exiting trace_sys_connect\n");
-	//int id = bpf_get_numa_node_id();
-	//bpf_printk("BPF : at NUMA node : %d\n", id);
-	//do_reg_lookup();
-	//detach_kprobe();
+	bpf_loop(iter, runner2, NULL,0);
+	post_work();
 	return 0;	
 }
-/*
-SEC("kprobe/__x64_sys_execve")
-int kprobe_execve(struct pt_regs *ctx)
-{
-    void *ip = (void*)PT_REGS_IP(ctx);
 
-    if (ip == &trace_sys_connect + 1) {
-        // instruction after the marker
-    	bpf_trace_printk("kprobe handler\n");
-	} 
-    //else if (ip == &trace_sys_connect + 3) {
-        // instruction to probe
-    //}
-
-    return 0;
-}
-*/
 
 char _license[] SEC("license") = "GPL";
 u32 _version SEC("version") = LINUX_VERSION_CODE;

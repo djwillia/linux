@@ -1093,6 +1093,7 @@ static int acquire_reference_state(struct bpf_verifier_env *env, int insn_idx)
 /* release function corresponding to acquire_reference_state(). Idempotent. */
 static int release_reference_state(struct bpf_func_state *state, int ptr_id)
 {
+	// TODO : This function might come handy for releasing references later on
 	int i, last_idx;
 
 	last_idx = state->acquired_refs - 1;
@@ -1179,6 +1180,8 @@ static int copy_verifier_state(struct bpf_verifier_state *dst_state,
 	dst_state->parent = src->parent;
 	dst_state->first_insn_idx = src->first_insn_idx;
 	dst_state->last_insn_idx = src->last_insn_idx;
+	dst_state->weight_so_far = src->weight_so_far; // copy the weights so far 
+	printk("New state weight so far = old state weight so far = %d\n", dst_state->weight_so_far);
 	for (i = 0; i <= src->curframe; i++) {
 		dst = dst_state->frame[i];
 		if (!dst) {
@@ -1220,8 +1223,12 @@ static int pop_stack(struct bpf_verifier_env *env, int *prev_insn_idx,
 
 	if (env->head == NULL)
 		return -ENOENT;
-
 	if (cur) {
+		// check if total cost exceeded a threshold
+		printk("Inside pop_stack. Checking for cur->weight_so_far:%d\n", cur->weight_so_far);
+		if (cur->weight_so_far > 10000)
+			return -EFBIG; 
+
 		err = copy_verifier_state(cur, &head->st);
 		if (err)
 			return err;
@@ -1258,6 +1265,7 @@ static struct bpf_verifier_state *push_stack(struct bpf_verifier_env *env,
 	elem->log_pos = env->log.len_used;
 	env->head = elem;
 	env->stack_size++;
+	printk(" %d : Push Stack : Copy old verifier_state to new_state\n", __LINE__);
 	err = copy_verifier_state(&elem->st, cur);
 	if (err)
 		goto err;
@@ -6697,7 +6705,6 @@ static int __check_func_call(struct bpf_verifier_env *env, struct bpf_insn *insn
 		/* continue with next insn after call */
 		return 0;
 	}
-
 	callee = kzalloc(sizeof(*callee), GFP_KERNEL);
 	if (!callee)
 		return -ENOMEM;
@@ -6734,7 +6741,7 @@ static int __check_func_call(struct bpf_verifier_env *env, struct bpf_insn *insn
 		verbose(env, "caller:\n");
 		print_verifier_state(env, caller, true);
 		verbose(env, "callee:\n");
-		print_verifier_state(env, callee, true);
+	 	print_verifier_state(env, callee, true);
 	}
 	return 0;
 }
@@ -6902,11 +6909,19 @@ static int set_find_vma_callback_state(struct bpf_verifier_env *env,
 	return 0;
 }
 
+static bool is_bpf_loop_call(struct bpf_insn *insn)
+{
+	return insn->code == (BPF_JMP | BPF_CALL) &&
+		insn->src_reg == 0 &&
+		insn->imm == BPF_FUNC_loop;
+}
+
 static int prepare_func_exit(struct bpf_verifier_env *env, int *insn_idx)
 {
 	struct bpf_verifier_state *state = env->cur_state;
 	struct bpf_func_state *caller, *callee;
 	struct bpf_reg_state *r0;
+	struct bpf_insn *insns = env->prog->insnsi;
 	int err;
 
 	callee = state->frame[state->curframe];
@@ -6946,7 +6961,33 @@ static int prepare_func_exit(struct bpf_verifier_env *env, int *insn_idx)
 	if (err)
 		return err;
 
+
+	/* Check if callee->callsite  was a function call (most likely)
+	   If yes, check for bpf helper call (bpf_loop) and find the nr_iter.
+	   Add nr_iter*weight_of_callee_function to the weight_of_caller */	
+	for(int i=0;i<=env->subprog_cnt;i++)
+		printk("Subprog #%d: Weight before: %ld\n",i,env->subprog_info[i].weight  );
+
+	printk("Returning from func %d to %d\n", callee->subprogno, caller->subprogno);
+	int prev_idx = callee->callsite;
+	u64 callee_weight = env->subprog_info[callee->subprogno].weight;
+	u64 nr_iter=1;
+	if(is_bpf_loop_call(&insns[prev_idx])){
+		for(;insns[prev_idx].code != 0xb7 || insns[prev_idx].dst_reg != 0x1; prev_idx--);	
+		nr_iter = insns[prev_idx].imm;
+		printk("Looking for bpf_loop iteration count : Found num iterations : %d\n", nr_iter);
+		env->subprog_info[caller->subprogno].weight+=nr_iter*callee_weight; 
+		printk("subprog[%d].weight + %lld = %lld\n",caller->subprogno, nr_iter*callee_weight, env->subprog_info[caller->subprogno].weight);
+		// make the weight of callee = 0 for some other verification pass
+		env->subprog_info[callee->subprogno].weight=0;	
+		env->cur_state->weight_so_far += (nr_iter-1)*callee_weight;
+		printk("cur_state.weight + %lld = %lld\n", (nr_iter-1)*callee_weight, env->cur_state->weight_so_far);
+	}	
+	// remaining types of function calls dont need anything else to do
+		
+
 	*insn_idx = callee->callsite + 1;
+
 	if (env->log.level & BPF_LOG_LEVEL) {
 		verbose(env, "returning from callee:\n");
 		print_verifier_state(env, callee, true);
@@ -7168,6 +7209,20 @@ static void update_loop_inline_state(struct bpf_verifier_env *env, u32 subprogno
 				 state->callback_subprogno == subprogno);
 }
 
+// Cost of helpers
+ int get_bpf_helper_cost(int func_id){
+         if(func_id==2)//bpf_map_update_elem
+                 return 10;
+         else if (func_id==1)//bpf_map_lookup_elem
+                 return 7;
+         else if(func_id==181)//bpf_loop
+                 return 100000;
+         else if(func_id==7)//bpf_get_prandom_u32
+                 return 5;
+         else
+                 return 1;
+ }
+
 static int check_helper_call(struct bpf_verifier_env *env, struct bpf_insn *insn,
 			     int *insn_idx_p)
 {
@@ -7183,6 +7238,7 @@ static int check_helper_call(struct bpf_verifier_env *env, struct bpf_insn *insn
 
 	/* find function prototype */
 	func_id = insn->imm;
+	//printk("Checking fn: %s, cost:%d\n", func_id_name(func_id), get_bpf_helper_cost(func_id));
 	if (func_id < 0 || func_id >= __BPF_FUNC_MAX_ID) {
 		verbose(env, "invalid func %s#%d\n", func_id_name(func_id),
 			func_id);
@@ -7306,26 +7362,33 @@ static int check_helper_call(struct bpf_verifier_env *env, struct bpf_insn *insn
 		}
 		break;
 	case BPF_FUNC_for_each_map_elem:
+		printk("BPF_FUNC_for_each_map_elem\n");
 		err = __check_func_call(env, insn, insn_idx_p, meta.subprogno,
 					set_map_elem_callback_state);
 		break;
 	case BPF_FUNC_timer_set_callback:
+		printk("BPF_FUNC_timer_set_callback\n");
 		err = __check_func_call(env, insn, insn_idx_p, meta.subprogno,
 					set_timer_callback_state);
 		break;
+		printk("BPF_FUNC_set_retval\n");
 	case BPF_FUNC_find_vma:
+		printk("BPF_FUNC_find_vma\n");
 		err = __check_func_call(env, insn, insn_idx_p, meta.subprogno,
 					set_find_vma_callback_state);
 		break;
 	case BPF_FUNC_snprintf:
+		printk("BPF_FUNC_snprintf\n");
 		err = check_bpf_snprintf_call(env, regs);
 		break;
 	case BPF_FUNC_loop:
+		printk("BPF_FUNC_loop\n");
 		update_loop_inline_state(env, meta.subprogno);
 		err = __check_func_call(env, insn, insn_idx_p, meta.subprogno,
 					set_loop_callback_state);
 		break;
 	case BPF_FUNC_dynptr_from_mem:
+		printk("BPF_FUNC_dynptr_from_mem\n");
 		if (regs[BPF_REG_1].type != PTR_TO_MAP_VALUE) {
 			verbose(env, "Unsupported reg type %s for bpf_dynptr_from_mem data\n",
 				reg_type_str(env, regs[BPF_REG_1].type));
@@ -7333,6 +7396,7 @@ static int check_helper_call(struct bpf_verifier_env *env, struct bpf_insn *insn
 		}
 		break;
 	case BPF_FUNC_set_retval:
+		printk("BPF_FUNC_set_retval\n");
 		if (prog_type == BPF_PROG_TYPE_LSM &&
 		    env->prog->expected_attach_type == BPF_LSM_CGROUP) {
 			if (!env->prog->aux->attach_func_proto->type) {
@@ -12061,9 +12125,13 @@ static bool reg_type_mismatch(enum bpf_reg_type src, enum bpf_reg_type prev)
 	return src != prev && (!reg_type_mismatch_ok(src) ||
 			       !reg_type_mismatch_ok(prev));
 }
-
+static int my_die(int line_no, int return_val){
+	printk("[verifier.c:%d] Exiting with return value : %d from do_check\n", line_no, return_val);
+	return return_val;
+}
 static int do_check(struct bpf_verifier_env *env)
 {
+	// TODO : check why the total cost from helper is non-zero only once while there are 3 sub-progs in the loops_kern.c eBPF program 
 	bool pop_log = !(env->log.level & BPF_LOG_LEVEL2);
 	struct bpf_verifier_state *state = env->cur_state;
 	struct bpf_insn *insns = env->prog->insnsi;
@@ -12071,7 +12139,9 @@ static int do_check(struct bpf_verifier_env *env)
 	int insn_cnt = env->prog->len;
 	bool do_print_state = false;
 	int prev_insn_idx = -1;
-
+	int kfunc_call=0, helper_call=0, func_call=0;
+	
+	int caller_fn= cur_func(env)->subprogno;
 	for (;;) {
 		struct bpf_insn *insn;
 		u8 class;
@@ -12079,43 +12149,45 @@ static int do_check(struct bpf_verifier_env *env)
 
 		env->prev_insn_idx = prev_insn_idx;
 		if (env->insn_idx >= insn_cnt) {
-			verbose(env, "invalid insn idx %d insn_cnt %d\n",
+			printk("invalid insn idx %d insn_cnt %d\n",
 				env->insn_idx, insn_cnt);
 			return -EFAULT;
 		}
 
 		insn = &insns[env->insn_idx];
+		caller_fn= cur_func(env)->subprogno;
+		printk("From do_check(): %d: %x %x %x %x\n", env->insn_idx, insn->code, insn->dst_reg, insn->src_reg, insn->imm);
 		class = BPF_CLASS(insn->code);
 
 		if (++env->insn_processed > BPF_COMPLEXITY_LIMIT_INSNS) {
-			verbose(env,
-				"BPF program is too large. Processed %d insn\n",
+			printk( "BPF program is too large. Processed %d insn\n",
 				env->insn_processed);
 			return -E2BIG;
 		}
 
 		err = is_state_visited(env, env->insn_idx);
-		if (err < 0)
+		if (err < 0){
+			printk("Returning after is_state_visited\n");
 			return err;
+		}
 		if (err == 1) {
 			/* found equivalent state, can prune the search */
-			if (env->log.level & BPF_LOG_LEVEL) {
-				if (do_print_state)
-					verbose(env, "\nfrom %d to %d%s: safe\n",
+			printk("\nfrom %d to %d%s: safe\n",
 						env->prev_insn_idx, env->insn_idx,
 						env->cur_state->speculative ?
 						" (speculative execution)" : "");
-				else
-					verbose(env, "%d: safe\n", env->insn_idx);
-			}
 			goto process_bpf_exit;
 		}
 
-		if (signal_pending(current))
-			return -EAGAIN;
+		if (signal_pending(current)){
+			printk("returning from signal_pending\n");
+			return -EAGAIN; 
+		}
 
-		if (need_resched())
+		if (need_resched()){
+			printk("returning from need_resched\n");
 			cond_resched();
+		}
 
 		if (env->log.level & BPF_LOG_LEVEL2 && do_print_state) {
 			verbose(env, "\nfrom %d to %d%s:",
@@ -12147,8 +12219,10 @@ static int do_check(struct bpf_verifier_env *env)
 		if (bpf_prog_is_dev_bound(env->prog->aux)) {
 			err = bpf_prog_offload_verify_insn(env, env->insn_idx,
 							   env->prev_insn_idx);
-			if (err)
-				return err;
+			if (err){
+				printk("Returning from is_dev_bound\n");	
+				return my_die(__LINE__,err);
+			}
 		}
 
 		regs = cur_regs(env);
@@ -12158,7 +12232,7 @@ static int do_check(struct bpf_verifier_env *env)
 		if (class == BPF_ALU || class == BPF_ALU64) {
 			err = check_alu_op(env, insn);
 			if (err)
-				return err;
+				return my_die(__LINE__,err);
 
 		} else if (class == BPF_LDX) {
 			enum bpf_reg_type *prev_src_type, src_reg_type;
@@ -12168,11 +12242,11 @@ static int do_check(struct bpf_verifier_env *env)
 			/* check src operand */
 			err = check_reg_arg(env, insn->src_reg, SRC_OP);
 			if (err)
-				return err;
+				return my_die(__LINE__,err);
 
 			err = check_reg_arg(env, insn->dst_reg, DST_OP_NO_MARK);
 			if (err)
-				return err;
+				return my_die(__LINE__,err);
 
 			src_reg_type = regs[insn->src_reg].type;
 
@@ -12183,7 +12257,7 @@ static int do_check(struct bpf_verifier_env *env)
 					       insn->off, BPF_SIZE(insn->code),
 					       BPF_READ, insn->dst_reg, false);
 			if (err)
-				return err;
+				return my_die(__LINE__,err);
 
 			prev_src_type = &env->insn_aux_data[env->insn_idx].ptr_type;
 
@@ -12202,7 +12276,7 @@ static int do_check(struct bpf_verifier_env *env)
 				 * src_reg == stack|map in some other branch.
 				 * Reject it.
 				 */
-				verbose(env, "same insn cannot be used with different pointers\n");
+				printk("same insn cannot be used with different pointers\n");
 				return -EINVAL;
 			}
 
@@ -12212,24 +12286,24 @@ static int do_check(struct bpf_verifier_env *env)
 			if (BPF_MODE(insn->code) == BPF_ATOMIC) {
 				err = check_atomic(env, env->insn_idx, insn);
 				if (err)
-					return err;
+					return my_die(__LINE__,err);
 				env->insn_idx++;
 				continue;
 			}
 
 			if (BPF_MODE(insn->code) != BPF_MEM || insn->imm != 0) {
-				verbose(env, "BPF_STX uses reserved fields\n");
+				printk("BPF_STX uses reserved fields\n");
 				return -EINVAL;
 			}
 
 			/* check src1 operand */
 			err = check_reg_arg(env, insn->src_reg, SRC_OP);
 			if (err)
-				return err;
+				return my_die(__LINE__,err);
 			/* check src2 operand */
 			err = check_reg_arg(env, insn->dst_reg, SRC_OP);
 			if (err)
-				return err;
+				return my_die(__LINE__,err);
 
 			dst_reg_type = regs[insn->dst_reg].type;
 
@@ -12238,30 +12312,30 @@ static int do_check(struct bpf_verifier_env *env)
 					       insn->off, BPF_SIZE(insn->code),
 					       BPF_WRITE, insn->src_reg, false);
 			if (err)
-				return err;
+				return my_die(__LINE__,err);
 
 			prev_dst_type = &env->insn_aux_data[env->insn_idx].ptr_type;
 
 			if (*prev_dst_type == NOT_INIT) {
 				*prev_dst_type = dst_reg_type;
 			} else if (reg_type_mismatch(dst_reg_type, *prev_dst_type)) {
-				verbose(env, "same insn cannot be used with different pointers\n");
+				printk("same insn cannot be used with different pointers\n");
 				return -EINVAL;
 			}
 
 		} else if (class == BPF_ST) {
 			if (BPF_MODE(insn->code) != BPF_MEM ||
 			    insn->src_reg != BPF_REG_0) {
-				verbose(env, "BPF_ST uses reserved fields\n");
+				printk("BPF_ST uses reserved fields\n");
 				return -EINVAL;
 			}
 			/* check src operand */
 			err = check_reg_arg(env, insn->dst_reg, SRC_OP);
 			if (err)
-				return err;
+				return my_die(__LINE__,err);
 
 			if (is_ctx_reg(env, insn->dst_reg)) {
-				verbose(env, "BPF_ST stores into R%d %s is not allowed\n",
+				printk("BPF_ST stores into R%d %s is not allowed\n",
 					insn->dst_reg,
 					reg_type_str(env, reg_state(env, insn->dst_reg)->type));
 				return -EACCES;
@@ -12272,7 +12346,7 @@ static int do_check(struct bpf_verifier_env *env)
 					       insn->off, BPF_SIZE(insn->code),
 					       BPF_WRITE, -1, false);
 			if (err)
-				return err;
+				return my_die(__LINE__,err);
 
 		} else if (class == BPF_JMP || class == BPF_JMP32) {
 			u8 opcode = BPF_OP(insn->code);
@@ -12287,31 +12361,51 @@ static int do_check(struct bpf_verifier_env *env)
 				     insn->src_reg != BPF_PSEUDO_KFUNC_CALL) ||
 				    insn->dst_reg != BPF_REG_0 ||
 				    class == BPF_JMP32) {
-					verbose(env, "BPF_CALL uses reserved fields\n");
+					printk("BPF_CALL uses reserved fields\n");
 					return -EINVAL;
 				}
 
 				if (env->cur_state->active_spin_lock &&
 				    (insn->src_reg == BPF_PSEUDO_CALL ||
 				     insn->imm != BPF_FUNC_spin_unlock)) {
-					verbose(env, "function calls are not allowed while holding a lock\n");
+					printk("function calls are not allowed while holding a lock\n");
 					return -EINVAL;
 				}
-				if (insn->src_reg == BPF_PSEUDO_CALL)
+				if (insn->src_reg == BPF_PSEUDO_CALL){
+					func_call++;	
 					err = check_func_call(env, insn, &env->insn_idx);
-				else if (insn->src_reg == BPF_PSEUDO_KFUNC_CALL)
+					int subprog = find_subprog(env, env->insn_idx + insn->imm + 1);
+					printk("bpf func call: If global, going to subprog #%d\n", subprog);
+					// TODO: now recognize which subprog is being called so that their associated weight can be printed. We know that they would have got printed already
+				}
+				else if (insn->src_reg == BPF_PSEUDO_KFUNC_CALL){
 					err = check_kfunc_call(env, insn, &env->insn_idx);
-				else
+					kfunc_call++;}
+				else{
+					int bpf_loop_subprog = cur_regs(env)[2].subprogno;
 					err = check_helper_call(env, insn, &env->insn_idx);
+					helper_call++;
+					int func_id = insn->imm;
+					if(func_id==181){
+						printk("bpf loop call: If global Going to Subprog #%d\n", bpf_loop_subprog);
+						// weight = nr_iter*weight_of_callback_fn
+					}
+					else {	
+						env->subprog_info[caller_fn].weight += get_bpf_helper_cost(func_id);
+						env->cur_state->weight_so_far += get_bpf_helper_cost(func_id);
+						printk("Helper weight %d added to current state ==>%lld\n",get_bpf_helper_cost(func_id), env->cur_state->weight_so_far);
+						printk("Helper weight %d added to subprog[%d] ==> %d\n",get_bpf_helper_cost(func_id), caller_fn, env->subprog_info[caller_fn].weight);
+					}
+				}
 				if (err)
-					return err;
+					return my_die(__LINE__,err);
 			} else if (opcode == BPF_JA) {
 				if (BPF_SRC(insn->code) != BPF_K ||
 				    insn->imm != 0 ||
 				    insn->src_reg != BPF_REG_0 ||
 				    insn->dst_reg != BPF_REG_0 ||
 				    class == BPF_JMP32) {
-					verbose(env, "BPF_JA uses reserved fields\n");
+					printk("BPF_JA uses reserved fields\n");
 					return -EINVAL;
 				}
 
@@ -12324,12 +12418,12 @@ static int do_check(struct bpf_verifier_env *env)
 				    insn->src_reg != BPF_REG_0 ||
 				    insn->dst_reg != BPF_REG_0 ||
 				    class == BPF_JMP32) {
-					verbose(env, "BPF_EXIT uses reserved fields\n");
+					printk("BPF_EXIT uses reserved fields\n");
 					return -EINVAL;
 				}
 
 				if (env->cur_state->active_spin_lock) {
-					verbose(env, "bpf_spin_unlock is missing\n");
+					printk("bpf_spin_unlock is missing\n");
 					return -EINVAL;
 				}
 
@@ -12337,18 +12431,18 @@ static int do_check(struct bpf_verifier_env *env)
 					/* exit from nested function */
 					err = prepare_func_exit(env, &env->insn_idx);
 					if (err)
-						return err;
+						return my_die(__LINE__,err);
 					do_print_state = true;
 					continue;
 				}
 
 				err = check_reference_leak(env);
 				if (err)
-					return err;
+					return my_die(__LINE__,err);
 
 				err = check_return_code(env);
 				if (err)
-					return err;
+					return my_die(__LINE__,err);
 process_bpf_exit:
 				mark_verifier_state_scratched(env);
 				update_branch_counts(env, env->cur_state);
@@ -12356,8 +12450,8 @@ process_bpf_exit:
 						&env->insn_idx, pop_log);
 				if (err < 0) {
 					if (err != -ENOENT)
-						return err;
-					break;
+						return my_die(__LINE__,err);
+					break; 
 				} else {
 					do_print_state = true;
 					continue;
@@ -12365,7 +12459,7 @@ process_bpf_exit:
 			} else {
 				err = check_cond_jmp_op(env, insn, &env->insn_idx);
 				if (err)
-					return err;
+					return my_die(__LINE__,err);
 			}
 		} else if (class == BPF_LD) {
 			u8 mode = BPF_MODE(insn->code);
@@ -12373,30 +12467,30 @@ process_bpf_exit:
 			if (mode == BPF_ABS || mode == BPF_IND) {
 				err = check_ld_abs(env, insn);
 				if (err)
-					return err;
+					return my_die(__LINE__,err);
 
 			} else if (mode == BPF_IMM) {
 				err = check_ld_imm(env, insn);
 				if (err)
-					return err;
+					return my_die(__LINE__,err);
 
 				env->insn_idx++;
 				sanitize_mark_insn_seen(env);
 			} else {
-				verbose(env, "invalid BPF_LD mode\n");
+				printk( "invalid BPF_LD mode\n");
 				return -EINVAL;
 			}
 		} else {
-			verbose(env, "unknown insn class %d\n", class);
+			printk("unknown insn class %d\n", class);
 			return -EINVAL;
 		}
 
 		env->insn_idx++;
 	}
 
+	printk("calls checked : helper:%d, kfunc:%d, func:%d\n",helper_call, kfunc_call, func_call);
 	return 0;
 }
-
 static int find_btf_percpu_datasec(struct btf *btf)
 {
 	const struct btf_type *t;
@@ -14463,12 +14557,6 @@ static struct bpf_prog *inline_bpf_loop(struct bpf_verifier_env *env,
 	return new_prog;
 }
 
-static bool is_bpf_loop_call(struct bpf_insn *insn)
-{
-	return insn->code == (BPF_JMP | BPF_CALL) &&
-		insn->src_reg == 0 &&
-		insn->imm == BPF_FUNC_loop;
-}
 
 /* For all sub-programs in the program (including main) check
  * insn_aux_data to see if there are bpf_loop calls that require
@@ -14554,16 +14642,16 @@ static void free_states(struct bpf_verifier_env *env)
 	}
 }
 
-static int do_check_common(struct bpf_verifier_env *env, int subprog)
-{
+static int do_check_common(struct bpf_verifier_env *env, int subprog) {
 	bool pop_log = !(env->log.level & BPF_LOG_LEVEL2);
 	struct bpf_verifier_state *state;
 	struct bpf_reg_state *regs;
 	int ret, i;
-
+	printk("Inside do_check_common\n");
 	env->prev_linfo = NULL;
 	env->pass_cnt++;
 
+	printk("%d : Creating a new bpf_verifier_state in do_check_common\n", __LINE__);
 	state = kzalloc(sizeof(struct bpf_verifier_state), GFP_KERNEL);
 	if (!state)
 		return -ENOMEM;
@@ -14616,9 +14704,21 @@ static int do_check_common(struct bpf_verifier_env *env, int subprog)
 			 */
 			goto out;
 	}
-
+	printk("Pass count: %d, subprog #%d\n", env->pass_cnt, subprog);
 	ret = do_check(env);
+
+	// check for weight exceeding threshold for one last time 
+	if(env->cur_state )
+	{
+		printk("Checking total weight at end of verification...\n");
+		if (env->cur_state->weight_so_far > 10000)
+		{
+			printk("cur->weight_so_far : %d exceeded threshold of 10000\n",env->cur_state->weight_so_far);
+			ret = -EFBIG;
+		}
+	}
 out:
+
 	/* check for NULL is necessary, since cur_state can be freed inside
 	 * do_check() under memory pressure.
 	 */
@@ -14655,9 +14755,9 @@ static int do_check_subprogs(struct bpf_verifier_env *env)
 	struct bpf_prog_aux *aux = env->prog->aux;
 	int i, ret;
 
+	printk("Inside do_check_subprogs\n");
 	if (!aux->func_info)
 		return 0;
-
 	for (i = 1; i < env->subprog_cnt; i++) {
 		if (aux->func_info_aux[i].linkage != BTF_FUNC_GLOBAL)
 			continue;
@@ -14678,7 +14778,7 @@ static int do_check_subprogs(struct bpf_verifier_env *env)
 static int do_check_main(struct bpf_verifier_env *env)
 {
 	int ret;
-
+	printk("Inside do_check_main\n");
 	env->insn_idx = 0;
 	ret = do_check_common(env, 0);
 	if (!ret)
@@ -15249,9 +15349,17 @@ int bpf_check(struct bpf_prog **prog, union bpf_attr *attr, bpfptr_t uattr)
 	if (ret < 0)
 		goto skip_full_check;
 
+	printk("Subprog cnt:%d\n", env->subprog_cnt);
 	ret = do_check_subprogs(env);
 	ret = ret ?: do_check_main(env);
 
+	/*printk("============First pass weight calculation=========\n");
+	for(int i=0;i<=env->subprog_cnt;i++)
+		printk("Subprog #%d: Weight: %lld\n",i,env->subprog_info[i].weight  );
+	
+	//ret = ret ?: cummulative_weight(env);
+	printk("==================================================\n");
+	*/
 	if (ret == 0 && bpf_prog_is_dev_bound(env->prog->aux))
 		ret = bpf_prog_offload_finalize(env);
 
@@ -15262,9 +15370,9 @@ skip_full_check:
 		ret = check_max_stack_depth(env);
 
 	/* instruction rewrites happen after this point */
-	if (ret == 0)
+	/*if (ret == 0)
 		ret = optimize_bpf_loop(env);
-
+	*/
 	if (is_priv) {
 		if (ret == 0)
 			opt_hard_wire_dead_code_branches(env);
@@ -15283,7 +15391,7 @@ skip_full_check:
 
 	if (ret == 0)
 		ret = do_misc_fixups(env);
-
+	
 	/* do 32-bit optimization after insn patching has done so those patched
 	 * insns could be handled correctly.
 	 */

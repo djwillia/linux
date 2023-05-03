@@ -51,6 +51,7 @@ tprogs-y += task_fd_query
 tprogs-y += ibumad
 tprogs-y += hbm
 tprogs-y += loops 
+tprogs-y += loops_switch 
 tprogs-y += trigger_loops 
 
 #tprogs-y += xdp_redirect_cpu
@@ -114,6 +115,7 @@ xdp_sample_pkts-objs := xdp_sample_pkts_user.o
 ibumad-objs := ibumad_user.o
 hbm-objs := hbm.o $(CGROUP_HELPERS)
 loops-objs := loops_user.o $(TRACE_HELPERS)
+loops_switch-objs := loops_switch_user.o $(TRACE_HELPERS)
 trigger-loops := trigger_loops.o 
 
 xdp_redirect_map_multi-objs := xdp_redirect_map_multi_user.o $(XDP_SAMPLE)
@@ -178,6 +180,7 @@ always-y += ibumad_kern.o
 always-y += hbm_out_kern.o
 always-y += hbm_edt_kern.o
 always-y += loops_kern.o
+always-y += loops_switch_kern.o
 
 ifeq ($(ARCH), arm)
 # Strip all except -D__LINUX_ARM_ARCH__ option needed to handle linux
