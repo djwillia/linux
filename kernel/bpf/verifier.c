@@ -1225,10 +1225,11 @@ static int pop_stack(struct bpf_verifier_env *env, int *prev_insn_idx,
 		return -ENOENT;
 	if (cur) {
 		// check if total cost exceeded a threshold
+		/*
 		printk("Inside pop_stack. Checking for cur->weight_so_far:%d\n", cur->weight_so_far);
-		if (cur->weight_so_far > 10000)
+		if (cur->weight_so_far > 100000000)
 			return -EFBIG; 
-
+		*/
 		err = copy_verifier_state(cur, &head->st);
 		if (err)
 			return err;
@@ -7216,7 +7217,7 @@ static void update_loop_inline_state(struct bpf_verifier_env *env, u32 subprogno
          else if (func_id==1)//bpf_map_lookup_elem
                  return 7;
          else if(func_id==181)//bpf_loop
-                 return 100000;
+                 return 0;
          else if(func_id==7)//bpf_get_prandom_u32
                  return 5;
          else
@@ -14708,15 +14709,17 @@ static int do_check_common(struct bpf_verifier_env *env, int subprog) {
 	ret = do_check(env);
 
 	// check for weight exceeding threshold for one last time 
+	/*
 	if(env->cur_state )
 	{
 		printk("Checking total weight at end of verification...\n");
-		if (env->cur_state->weight_so_far > 10000)
+		if (env->cur_state->weight_so_far > 100000000)
 		{
-			printk("cur->weight_so_far : %d exceeded threshold of 10000\n",env->cur_state->weight_so_far);
+			printk("cur->weight_so_far : %d exceeded threshold of 100000000\n",env->cur_state->weight_so_far);
 			ret = -EFBIG;
 		}
 	}
+	*/
 out:
 
 	/* check for NULL is necessary, since cur_state can be freed inside

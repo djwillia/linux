@@ -51,6 +51,7 @@ tprogs-y += task_fd_query
 tprogs-y += ibumad
 tprogs-y += hbm
 tprogs-y += loops 
+tprogs-y += time_mapupdate 
 tprogs-y += loops_switch 
 tprogs-y += trigger_loops 
 
@@ -115,6 +116,7 @@ xdp_sample_pkts-objs := xdp_sample_pkts_user.o
 ibumad-objs := ibumad_user.o
 hbm-objs := hbm.o $(CGROUP_HELPERS)
 loops-objs := loops_user.o $(TRACE_HELPERS)
+time_mapupdate-objs := time_mapupdate_user.o $(TRACE_HELPERS)
 loops_switch-objs := loops_switch_user.o $(TRACE_HELPERS)
 trigger-loops := trigger_loops.o 
 
@@ -180,7 +182,10 @@ always-y += ibumad_kern.o
 always-y += hbm_out_kern.o
 always-y += hbm_edt_kern.o
 always-y += loops_kern.o
+always-y += time_mapupdate_kern.o
+always-y += time_spinlock_kern.o
 always-y += loops_switch_kern.o
+always-y += timing_analysis/ 
 
 ifeq ($(ARCH), arm)
 # Strip all except -D__LINUX_ARM_ARCH__ option needed to handle linux

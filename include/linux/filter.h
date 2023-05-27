@@ -589,6 +589,7 @@ static __always_inline u32 __bpf_prog_run(const struct bpf_prog *prog,
 	u32 prog_id = prog->aux->id;
 	struct task_struct *tsk;
 	static unsigned long rxx; // for fetching registers and saving later on
+	struct bpf_link *link;
 	cant_migrate();
 	if(prog_id>11){ //TODO: skip all pre-installed programs in a better way
 
@@ -670,11 +671,9 @@ static __always_inline u32 __bpf_prog_run(const struct bpf_prog *prog,
 			//printk("All %d kprobes unregisterd\n", prog->saved_state->num_kprobes);
 			
 			// detach from hook point
-			struct bpf_link *link;
-			int ret; 
 			link = bpf_link_by_id(prog_id);	
 			if(IS_ERR(link))
-				printk("Failed to fetch link : %d\n", PTR_ERR(link));
+				printk("Failed to fetch link : %ld\n", PTR_ERR(link));
 			else if (link->ops->detach){
                  		ret = link->ops->detach(link);
 				printk("Unlinked with ret : %d\n", ret);

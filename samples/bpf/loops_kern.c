@@ -12,8 +12,8 @@
 #endif
 #include <linux/kprobes.h>
 
-#define MAX_DICT_SIZE 1000 
-#define MAX_DICT_VAL  10000
+#define MAX_DICT_SIZE 1000000 
+#define MAX_DICT_VAL  100
 
 //struct kprobe kp;
 
@@ -65,6 +65,22 @@ int  _populate_map()
 	return 0;
 }
 
+
+static int map_update()
+{
+	int val = 1;  
+	//const int key=bpf_get_prandom_u32() % MAX_DICT_SIZE;
+	const int key=0;
+
+	u64 start_time = bpf_ktime_get_ns();
+	bpf_map_update_elem(&my_map, &key, &val, BPF_ANY);
+	u64 end_time = bpf_ktime_get_ns();
+	if (end_time - start_time > 100000)
+		bpf_printk("Update elem time delta : %ld ns\n", end_time-start_time);
+	return 0;
+}
+
+/*
  noinline static int runner(void* ctx)
 {
 
@@ -76,11 +92,13 @@ int  _populate_map()
 	
 	return 0;
 }
+*/
 
 noinline static int runner2(void* ctx)
 {
 
-	bpf_loop((1<<2), runner, NULL,0);
+	//bpf_loop((1<<2), runner, NULL,0);
+	bpf_loop((1<<20), map_update , NULL,0);
 	return 0;
 
 }
@@ -126,13 +144,12 @@ noinline int post_work(){
 SEC("tracepoint/syscalls/sys_exit_hello")
 int trace_sys_connect(struct pt_regs *ctx)
 {	
-	//bpf_printk("Inside trace_sys_connect\n");
-	bpf_printk("Inside trace_sys_connect v_1.3\n");
-	pre_work();
-	u32 iter = (1<<2);	
-	bpf_printk("Loop iteration count: %dk\n",iter);
+	bpf_printk("Inside trace_sys_connect v_1.5\n");
+	//pre_work();
+	u32 iter = (1<<20);	
+	bpf_printk("Loop iteration count: %ld\n",iter);
 	bpf_loop(iter, runner2, NULL,0);
-	post_work();
+	//post_work();
 	return 0;	
 }
 
