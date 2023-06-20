@@ -1180,8 +1180,9 @@ static int copy_verifier_state(struct bpf_verifier_state *dst_state,
 	dst_state->parent = src->parent;
 	dst_state->first_insn_idx = src->first_insn_idx;
 	dst_state->last_insn_idx = src->last_insn_idx;
-	dst_state->weight_so_far = src->weight_so_far; // copy the weights so far 
-	printk("New state weight so far = old state weight so far = %d\n", dst_state->weight_so_far);
+	dst_state->min_weight_so_far = src->min_weight_so_far; // copy the weights so far 
+	dst_state->max_weight_so_far = src->max_weight_so_far; // copy the weights so far 
+	//printk("New state weight so far = old state weight so far = %d\n", dst_state->weight_so_far);
 	for (i = 0; i <= src->curframe; i++) {
 		dst = dst_state->frame[i];
 		if (!dst) {
@@ -1225,11 +1226,11 @@ static int pop_stack(struct bpf_verifier_env *env, int *prev_insn_idx,
 		return -ENOENT;
 	if (cur) {
 		// check if total cost exceeded a threshold
-		/*
-		printk("Inside pop_stack. Checking for cur->weight_so_far:%d\n", cur->weight_so_far);
-		if (cur->weight_so_far > 100000000)
+		if(cur->max_weight_so_far!=0)	
+			printk("Inside pop_stack. Checking for weight_so_far:%d-%d\n", cur->min_weight_so_far, cur->max_weight_so_far);
+		if (cur->max_weight_so_far > 10000000000)
 			return -EFBIG; 
-		*/
+		
 		err = copy_verifier_state(cur, &head->st);
 		if (err)
 			return err;
@@ -1266,7 +1267,7 @@ static struct bpf_verifier_state *push_stack(struct bpf_verifier_env *env,
 	elem->log_pos = env->log.len_used;
 	env->head = elem;
 	env->stack_size++;
-	printk(" %d : Push Stack : Copy old verifier_state to new_state\n", __LINE__);
+	//printk(" %d : Push Stack : Copy old verifier_state to new_state\n", __LINE__);
 	err = copy_verifier_state(&elem->st, cur);
 	if (err)
 		goto err;
@@ -6967,22 +6968,26 @@ static int prepare_func_exit(struct bpf_verifier_env *env, int *insn_idx)
 	   If yes, check for bpf helper call (bpf_loop) and find the nr_iter.
 	   Add nr_iter*weight_of_callee_function to the weight_of_caller */	
 	for(int i=0;i<=env->subprog_cnt;i++)
-		printk("Subprog #%d: Weight before: %ld\n",i,env->subprog_info[i].weight  );
+		printk("Subprog #%d: Weight before: %ld\n",i,env->subprog_info[i].max_weight  );
 
-	printk("Returning from func %d to %d\n", callee->subprogno, caller->subprogno);
+	//printk("Returning from func %d to %d\n", callee->subprogno, caller->subprogno);
 	int prev_idx = callee->callsite;
-	u64 callee_weight = env->subprog_info[callee->subprogno].weight;
+	u64 callee_max_weight = env->subprog_info[callee->subprogno].max_weight;
+	u64 callee_min_weight = env->subprog_info[callee->subprogno].max_weight;
 	u64 nr_iter=1;
 	if(is_bpf_loop_call(&insns[prev_idx])){
 		for(;insns[prev_idx].code != 0xb7 || insns[prev_idx].dst_reg != 0x1; prev_idx--);	
 		nr_iter = insns[prev_idx].imm;
 		printk("Looking for bpf_loop iteration count : Found num iterations : %d\n", nr_iter);
-		env->subprog_info[caller->subprogno].weight+=nr_iter*callee_weight; 
-		printk("subprog[%d].weight + %lld = %lld\n",caller->subprogno, nr_iter*callee_weight, env->subprog_info[caller->subprogno].weight);
+		env->subprog_info[caller->subprogno].max_weight+=nr_iter*callee_max_weight; 
+		env->subprog_info[caller->subprogno].min_weight+=nr_iter*callee_min_weight; 
+		printk("subprog[%d].weight + %lld = %lld\n",caller->subprogno, nr_iter*callee_max_weight, env->subprog_info[caller->subprogno].max_weight);
 		// make the weight of callee = 0 for some other verification pass
-		env->subprog_info[callee->subprogno].weight=0;	
-		env->cur_state->weight_so_far += (nr_iter-1)*callee_weight;
-		printk("cur_state.weight + %lld = %lld\n", (nr_iter-1)*callee_weight, env->cur_state->weight_so_far);
+		env->subprog_info[callee->subprogno].max_weight=0;	
+		env->subprog_info[callee->subprogno].min_weight=0;	
+		env->cur_state->max_weight_so_far += (nr_iter-1)*callee_max_weight;
+		env->cur_state->min_weight_so_far += (nr_iter-1)*callee_min_weight;
+		printk("cur_state.max_weight + %lld = %lld\n", (nr_iter-1)*callee_max_weight, env->cur_state->max_weight_so_far);
 	}	
 	// remaining types of function calls dont need anything else to do
 		
@@ -7210,20 +7215,90 @@ static void update_loop_inline_state(struct bpf_verifier_env *env, u32 subprogno
 				 state->callback_subprogno == subprogno);
 }
 
-// Cost of helpers
- int get_bpf_helper_cost(int func_id){
-         if(func_id==2)//bpf_map_update_elem
-                 return 10;
-         else if (func_id==1)//bpf_map_lookup_elem
-                 return 7;
-         else if(func_id==181)//bpf_loop
-                 return 0;
-         else if(func_id==7)//bpf_get_prandom_u32
-                 return 5;
-         else
-                 return 1;
- }
+// Cost of helpers best case 
+ int get_bpf_helper_cost_best(int func_id){
+	
+	switch(func_id){
+		case BPF_FUNC_current_task_under_cgroup :			return 10 ;
+		case BPF_FUNC_perf_event_read :			return 10 ;
+		case BPF_FUNC_get_stackid :			return 15 ;
+		case BPF_FUNC_perf_prog_read_value :			return 17 ;
+		case BPF_FUNC_spin_lock :			return 10 ;
+		case BPF_FUNC_spin_unlock :			return 10 ;
+		case BPF_FUNC_get_current_comm :			return 31 ;
+		case BPF_FUNC_get_current_task :			return 38 ;
+		case BPF_FUNC_probe_read_kernel :			return 48 ;
+		case BPF_FUNC_get_smp_processor_id :			return 55 ;
+		case BPF_FUNC_sock_hash_update :			return 55 ;
+		case BPF_FUNC_get_numa_node_id :			return 55 ;
+		case BPF_FUNC_trace_printk :			return 55 ;
+		case BPF_FUNC_get_current_pid_tgid :			return 56 ;
+		case BPF_FUNC_tcp_sock :			return 57 ;
+		case BPF_FUNC_get_socket_cookie :			return 57 ;
+		case BPF_FUNC_sock_ops_cb_flags_set :			return 57 ;
+		case BPF_FUNC_get_current_uid_gid :			return 59 ;
+		case BPF_FUNC_get_prandom_u32 :			return 60 ;
+		case BPF_FUNC_getsockopt :			return 61 ;
+		case BPF_FUNC_sock_map_update :			return 62 ;
+		case BPF_FUNC_perf_event_output :			return 62 ;
+		case BPF_FUNC_setsockopt :			return 63 ;
+		case BPF_FUNC_perf_event_read_value :			return 66 ;
+		case BPF_FUNC_sk_storage_get :			return 80 ;
+		case BPF_FUNC_map_lookup_elem :			return 86 ;
+		case BPF_FUNC_send_signal :			return 91 ;
+		case BPF_FUNC_map_peek_elem :			return 102 ;
+		case BPF_FUNC_map_pop_elem :			return 103 ;
+		case BPF_FUNC_map_push_elem :			return 107 ;
+		case BPF_FUNC_map_delete_elem :			return 175 ;
+		case BPF_FUNC_map_update_elem :			return 249 ;
+		case BPF_FUNC_probe_read_user_str :			return 1000 ;
+         	default: return 0;
+ 
+	}
+}
 
+// cost of helpers worst case
+int get_bpf_helper_cost_worst(int func_id){
+	
+	switch(func_id){
+		case BPF_FUNC_current_task_under_cgroup :	return 130 ;
+		case BPF_FUNC_perf_event_read :	return 700 ;
+		case BPF_FUNC_get_stackid :	return 1800 ;
+		case BPF_FUNC_perf_prog_read_value :	return 120 ;
+		case BPF_FUNC_spin_lock :	return 50 ;
+		case BPF_FUNC_spin_unlock :	return 50 ;
+		case BPF_FUNC_get_current_comm :	return 114 ;
+		case BPF_FUNC_get_current_task :	return 260 ;
+		case BPF_FUNC_probe_read_kernel :	return 620 ;
+		case BPF_FUNC_get_smp_processor_id :	return 260 ;
+		case BPF_FUNC_sock_hash_update :	return 75 ;
+		case BPF_FUNC_get_numa_node_id :	return 260 ;
+		case BPF_FUNC_trace_printk :	return 180 ;
+		case BPF_FUNC_get_current_pid_tgid :	return 260 ;
+		case BPF_FUNC_tcp_sock :	return 70 ;
+		case BPF_FUNC_get_socket_cookie :	return 80 ;
+		case BPF_FUNC_sock_ops_cb_flags_set :	return 330 ;
+		case BPF_FUNC_get_current_uid_gid :	return 230 ;
+		case BPF_FUNC_get_prandom_u32 :	return 510 ;
+		case BPF_FUNC_getsockopt :	return 220 ;
+		case BPF_FUNC_sock_map_update :	return 80 ;
+		case BPF_FUNC_perf_event_output :	return 770 ;
+		case BPF_FUNC_setsockopt :	return 80 ;
+		case BPF_FUNC_perf_event_read_value :	return 790 ;
+		case BPF_FUNC_sk_storage_get :	return 1400 ;
+		case BPF_FUNC_map_lookup_elem :	return 590 ;
+		case BPF_FUNC_send_signal :	return 638 ;
+		case BPF_FUNC_map_peek_elem :	return 580 ;
+		case BPF_FUNC_map_pop_elem :	return 450 ;
+		case BPF_FUNC_map_push_elem :	return 180 ;
+		case BPF_FUNC_map_delete_elem :	return 860 ;
+		case BPF_FUNC_map_update_elem :	return 2834 ;
+		case BPF_FUNC_probe_read_user_str :	return 4500 ;
+         	default: return 0;
+ 
+	}
+
+}
 static int check_helper_call(struct bpf_verifier_env *env, struct bpf_insn *insn,
 			     int *insn_idx_p)
 {
@@ -7239,7 +7314,7 @@ static int check_helper_call(struct bpf_verifier_env *env, struct bpf_insn *insn
 
 	/* find function prototype */
 	func_id = insn->imm;
-	//printk("Checking fn: %s, cost:%d\n", func_id_name(func_id), get_bpf_helper_cost(func_id));
+	printk("Checking fn: %s, min_cost:%d max_cost%d\n", func_id_name(func_id), get_bpf_helper_cost_best(func_id), get_bpf_helper_cost_worst(func_id));
 	if (func_id < 0 || func_id >= __BPF_FUNC_MAX_ID) {
 		verbose(env, "invalid func %s#%d\n", func_id_name(func_id),
 			func_id);
@@ -7363,33 +7438,33 @@ static int check_helper_call(struct bpf_verifier_env *env, struct bpf_insn *insn
 		}
 		break;
 	case BPF_FUNC_for_each_map_elem:
-		printk("BPF_FUNC_for_each_map_elem\n");
+		//printk("BPF_FUNC_for_each_map_elem\n");
 		err = __check_func_call(env, insn, insn_idx_p, meta.subprogno,
 					set_map_elem_callback_state);
 		break;
 	case BPF_FUNC_timer_set_callback:
-		printk("BPF_FUNC_timer_set_callback\n");
+		//printk("BPF_FUNC_timer_set_callback\n");
 		err = __check_func_call(env, insn, insn_idx_p, meta.subprogno,
 					set_timer_callback_state);
 		break;
-		printk("BPF_FUNC_set_retval\n");
+		//printk("BPF_FUNC_set_retval\n");
 	case BPF_FUNC_find_vma:
-		printk("BPF_FUNC_find_vma\n");
+		//printk("BPF_FUNC_find_vma\n");
 		err = __check_func_call(env, insn, insn_idx_p, meta.subprogno,
 					set_find_vma_callback_state);
 		break;
 	case BPF_FUNC_snprintf:
-		printk("BPF_FUNC_snprintf\n");
+		//printk("BPF_FUNC_snprintf\n");
 		err = check_bpf_snprintf_call(env, regs);
 		break;
 	case BPF_FUNC_loop:
-		printk("BPF_FUNC_loop\n");
+		//printk("BPF_FUNC_loop\n");
 		update_loop_inline_state(env, meta.subprogno);
 		err = __check_func_call(env, insn, insn_idx_p, meta.subprogno,
 					set_loop_callback_state);
 		break;
 	case BPF_FUNC_dynptr_from_mem:
-		printk("BPF_FUNC_dynptr_from_mem\n");
+		//printk("BPF_FUNC_dynptr_from_mem\n");
 		if (regs[BPF_REG_1].type != PTR_TO_MAP_VALUE) {
 			verbose(env, "Unsupported reg type %s for bpf_dynptr_from_mem data\n",
 				reg_type_str(env, regs[BPF_REG_1].type));
@@ -7397,7 +7472,7 @@ static int check_helper_call(struct bpf_verifier_env *env, struct bpf_insn *insn
 		}
 		break;
 	case BPF_FUNC_set_retval:
-		printk("BPF_FUNC_set_retval\n");
+		//printk("BPF_FUNC_set_retval\n");
 		if (prog_type == BPF_PROG_TYPE_LSM &&
 		    env->prog->expected_attach_type == BPF_LSM_CGROUP) {
 			if (!env->prog->aux->attach_func_proto->type) {
@@ -12127,7 +12202,7 @@ static bool reg_type_mismatch(enum bpf_reg_type src, enum bpf_reg_type prev)
 			       !reg_type_mismatch_ok(prev));
 }
 static int my_die(int line_no, int return_val){
-	printk("[verifier.c:%d] Exiting with return value : %d from do_check\n", line_no, return_val);
+	//printk("[verifier.c:%d] Exiting with return value : %d from do_check\n", line_no, return_val);
 	return return_val;
 }
 static int do_check(struct bpf_verifier_env *env)
@@ -12157,7 +12232,7 @@ static int do_check(struct bpf_verifier_env *env)
 
 		insn = &insns[env->insn_idx];
 		caller_fn= cur_func(env)->subprogno;
-		printk("From do_check(): %d: %x %x %x %x\n", env->insn_idx, insn->code, insn->dst_reg, insn->src_reg, insn->imm);
+		//printk("From do_check(): %d: %x %x %x %x\n", env->insn_idx, insn->code, insn->dst_reg, insn->src_reg, insn->imm);
 		class = BPF_CLASS(insn->code);
 
 		if (++env->insn_processed > BPF_COMPLEXITY_LIMIT_INSNS) {
@@ -12392,10 +12467,12 @@ static int do_check(struct bpf_verifier_env *env)
 						// weight = nr_iter*weight_of_callback_fn
 					}
 					else {	
-						env->subprog_info[caller_fn].weight += get_bpf_helper_cost(func_id);
-						env->cur_state->weight_so_far += get_bpf_helper_cost(func_id);
-						printk("Helper weight %d added to current state ==>%lld\n",get_bpf_helper_cost(func_id), env->cur_state->weight_so_far);
-						printk("Helper weight %d added to subprog[%d] ==> %d\n",get_bpf_helper_cost(func_id), caller_fn, env->subprog_info[caller_fn].weight);
+						env->subprog_info[caller_fn].min_weight += get_bpf_helper_cost_best(func_id);
+						env->subprog_info[caller_fn].max_weight += get_bpf_helper_cost_worst(func_id);
+						env->cur_state->min_weight_so_far += get_bpf_helper_cost_best(func_id);
+						env->cur_state->max_weight_so_far += get_bpf_helper_cost_worst(func_id);
+						//printk("Helper weight %d added to current state ==>%lld\n",get_bpf_helper_cost(func_id), env->cur_state->weight_so_far);
+						//printk("Helper weight %d added to subprog[%d] ==> %d\n",get_bpf_helper_cost(func_id), caller_fn, env->subprog_info[caller_fn].weight);
 					}
 				}
 				if (err)
@@ -12489,7 +12566,7 @@ process_bpf_exit:
 		env->insn_idx++;
 	}
 
-	printk("calls checked : helper:%d, kfunc:%d, func:%d\n",helper_call, kfunc_call, func_call);
+	//printk("calls checked : helper:%d, kfunc:%d, func:%d\n",helper_call, kfunc_call, func_call);
 	return 0;
 }
 static int find_btf_percpu_datasec(struct btf *btf)
@@ -14648,11 +14725,11 @@ static int do_check_common(struct bpf_verifier_env *env, int subprog) {
 	struct bpf_verifier_state *state;
 	struct bpf_reg_state *regs;
 	int ret, i;
-	printk("Inside do_check_common\n");
+	//printk("Inside do_check_common\n");
 	env->prev_linfo = NULL;
 	env->pass_cnt++;
 
-	printk("%d : Creating a new bpf_verifier_state in do_check_common\n", __LINE__);
+	//printk("%d : Creating a new bpf_verifier_state in do_check_common\n", __LINE__);
 	state = kzalloc(sizeof(struct bpf_verifier_state), GFP_KERNEL);
 	if (!state)
 		return -ENOMEM;
@@ -14705,21 +14782,21 @@ static int do_check_common(struct bpf_verifier_env *env, int subprog) {
 			 */
 			goto out;
 	}
-	printk("Pass count: %d, subprog #%d\n", env->pass_cnt, subprog);
+	//printk("Pass count: %d, subprog #%d\n", env->pass_cnt, subprog);
 	ret = do_check(env);
 
 	// check for weight exceeding threshold for one last time 
-	/*
-	if(env->cur_state )
+	
+	if(env->cur_state && env->cur_state->max_weight_so_far != 0 )
 	{
-		printk("Checking total weight at end of verification...\n");
-		if (env->cur_state->weight_so_far > 100000000)
+		printk("Checking max-min weight: %ld-%ld at end of verification...\n",env->cur_state->min_weight_so_far , env->cur_state->max_weight_so_far);
+		if (env->cur_state->max_weight_so_far > 10000000000)
 		{
-			printk("cur->weight_so_far : %d exceeded threshold of 100000000\n",env->cur_state->weight_so_far);
+			printk("cur->max_weight_so_far : %d exceeded threshold of 10000000000\n",env->cur_state->max_weight_so_far);
 			ret = -EFBIG;
 		}
 	}
-	*/
+	
 out:
 
 	/* check for NULL is necessary, since cur_state can be freed inside
@@ -14758,7 +14835,7 @@ static int do_check_subprogs(struct bpf_verifier_env *env)
 	struct bpf_prog_aux *aux = env->prog->aux;
 	int i, ret;
 
-	printk("Inside do_check_subprogs\n");
+	//printk("Inside do_check_subprogs\n");
 	if (!aux->func_info)
 		return 0;
 	for (i = 1; i < env->subprog_cnt; i++) {
@@ -14781,7 +14858,7 @@ static int do_check_subprogs(struct bpf_verifier_env *env)
 static int do_check_main(struct bpf_verifier_env *env)
 {
 	int ret;
-	printk("Inside do_check_main\n");
+	//printk("Inside do_check_main\n");
 	env->insn_idx = 0;
 	ret = do_check_common(env, 0);
 	if (!ret)
@@ -15352,7 +15429,7 @@ int bpf_check(struct bpf_prog **prog, union bpf_attr *attr, bpfptr_t uattr)
 	if (ret < 0)
 		goto skip_full_check;
 
-	printk("Subprog cnt:%d\n", env->subprog_cnt);
+	//printk("Subprog cnt:%d\n", env->subprog_cnt);
 	ret = do_check_subprogs(env);
 	ret = ret ?: do_check_main(env);
 

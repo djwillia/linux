@@ -34,6 +34,7 @@
 BPF_CALL_2(bpf_map_lookup_elem, struct bpf_map *, map, void *, key)
 {
 	WARN_ON_ONCE(!rcu_read_lock_held() && !rcu_read_lock_bh_held());
+	printk("BPF_CALL map_lookup_elem : helpers.c\n");
 	return (unsigned long) map->ops->map_lookup_elem(map, key);
 }
 

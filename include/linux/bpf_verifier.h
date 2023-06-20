@@ -312,7 +312,8 @@ struct bpf_verifier_state {
 	u32 insn_idx;
 	u32 curframe;
 	u32 active_spin_lock;
-	u64 weight_so_far; // contains the overall weight of this state 
+	u64 min_weight_so_far; // contains the overall minimum weight of this state 
+	u64 max_weight_so_far; // contains the overall maximum weight of this state 
 	bool speculative;
 
 	/* first and last insn idx of this verifier state */
@@ -451,7 +452,8 @@ struct bpf_subprog_info {
 	bool tail_call_reachable;
 	bool has_ld_abs;
 	bool is_async_cb;
-	u64 weight;
+	u64 min_weight;
+	u64 max_weight;
 };
 
 /* single container for all structs

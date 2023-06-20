@@ -39,37 +39,26 @@ noinline int  _populate_map()
 }
 
 
-static int print_rare(void* ctx){
-	for(int i=0;i<100;i++)
-		bpf_printk("You are a rare find!\n");
+static int simple(void *ctx){
+	bpf_printk("You are a rare find!\n");
 	return 0;
 }
 
-static int print_numa(){
-	int num = bpf_get_numa_node_id();
-	bpf_printk("Completing execution in node id#%d\n", num);
+static int loop_simple(void *ctx){
+	bpf_loop(100, simple, NULL,0);
 	return 0;
 }
-SEC("tracepoint/syscalls/sys_exit_hello")
+SEC("tracepoint/syscalls/sys_exit_execve")
 int trace_sys_connect(struct pt_regs *ctx)
 {	
-	bpf_printk("Inside trace_sys_connect v_1.4\n");
 	//pre_work();
-	_populate_map(); // put some random values inside the map 
-	int key = bpf_get_prandom_u32()% MAX_DICT_SIZE; // obtain a random key to look for
-	int *result = bpf_map_lookup_elem(&my_map, &key);
-	if(!result){
-		bpf_printk("Random key:%d not found\n", key);
-	}
-	else{
-		if(*result<20)
-			bpf_loop(1<<10, print_rare, NULL, 0);
-		else if(*result<80)
-			bpf_printk("Found an average number\n");
-		else
-			bpf_loop(1<<17, print_rare, NULL,0);
-	}
-	bpf_printk("Exiting trace_sys_connect\n");
+	//_populate_map(); // put some random values inside the map 
+	int key = bpf_get_prandom_u32();
+	//int *result = bpf_map_lookup_elem(&my_map, &key);
+	if(key>100)
+		bpf_printk("Found a common number\n");
+	else // key<100 
+		bpf_loop(10000, loop_simple, NULL,0);
 	return 0;	
 }
 

@@ -6680,7 +6680,7 @@ static int bpf_object_load_prog(struct bpf_object *obj, struct bpf_program *prog
 	bool own_log_buf = true;
 	__u32 log_level = prog->log_level;
 
-	pr_warn("[%s] %d\n", __FILE__, __LINE__);
+	//pr_warn("[%s] %d\n", __FILE__, __LINE__);
 	if (prog->type == BPF_PROG_TYPE_UNSPEC) {
 		/*
 		 * The program type must be set.  Most likely we couldn't find a proper
@@ -6702,7 +6702,7 @@ static int bpf_object_load_prog(struct bpf_object *obj, struct bpf_program *prog
 	load_attr.attach_btf_id = prog->attach_btf_id;
 	load_attr.kern_version = kern_version;
 	load_attr.prog_ifindex = prog->prog_ifindex;
-	pr_warn("[%s]:%d fd:%d \n", __FILE__, __LINE__, prog->attach_prog_fd);
+	//pr_warn("[%s]:%d fd:%d \n", __FILE__, __LINE__, prog->attach_prog_fd);
 	/* specify func_info/line_info only if kernel supports them */
 	btf_fd = bpf_object__btf_fd(obj);
 	if (btf_fd >= 0 && kernel_supports(obj, FEAT_BTF_FUNC)) {
@@ -7043,7 +7043,7 @@ bpf_object__load_progs(struct bpf_object *obj, int log_level)
 	struct bpf_program *prog;
 	size_t i;
 	int err;
-	pr_warn("[%s] %d", __FILE__, __LINE__);
+	//pr_warn("[%s] %d", __FILE__, __LINE__);
 
 	for (i = 0; i < obj->nr_programs; i++) {
 		prog = &obj->programs[i];
@@ -7072,7 +7072,7 @@ bpf_object__load_progs(struct bpf_object *obj, int log_level)
 			pr_warn("prog '%s': failed to load: %d\n", prog->name, err);
 			return err;
 		}
-		pr_warn("[%s] Rrunning for program : %ld\n", __FILE__, i);
+		//pr_warn("[%s] Rrunning for program : %ld\n", __FILE__, i);
 	}
 
 	bpf_object__free_relocs(obj);
@@ -7629,11 +7629,11 @@ static int bpf_object_load(struct bpf_object *obj, int extra_log_level, const ch
 		return libbpf_err(-EINVAL);
 	}
 
-	pr_warn("[%s] %d", __FILE__, __LINE__);
+	//pr_warn("[%s] %d", __FILE__, __LINE__);
 	if (obj->gen_loader)
 		bpf_gen__init(obj->gen_loader, extra_log_level, obj->nr_programs, obj->nr_maps);
 
-	pr_warn("[%s] %d", __FILE__, __LINE__);
+	//pr_warn("[%s] %d", __FILE__, __LINE__);
 	err = bpf_object__probe_loading(obj);
 	err = err ? : bpf_object__load_vmlinux_btf(obj, false);
 	err = err ? : bpf_object__resolve_externs(obj, obj->kconfig);
@@ -7645,7 +7645,7 @@ static int bpf_object_load(struct bpf_object *obj, int extra_log_level, const ch
 	err = err ? : bpf_object__load_progs(obj, extra_log_level);
 	err = err ? : bpf_object_init_prog_arrays(obj);
 
-	printf("[%s] %d", __FILE__, __LINE__);
+	//printf("[%s] %d", __FILE__, __LINE__);
 	if (obj->gen_loader) {
 		/* reset FDs */
 		if (obj->btf)

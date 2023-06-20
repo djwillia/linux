@@ -22,7 +22,7 @@ struct {
 /* kprobe is NOT a stable ABI. If kernel internals change this bpf+kprobe
  * example will no longer be meaningful
  */
-SEC("kprobe/kfree_skb")
+SEC("kprobe/kfree_skb_reason")
 int bpf_prog2(struct pt_regs *ctx)
 {
 	long loc = 0;

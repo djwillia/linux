@@ -13,14 +13,12 @@ int _version SEC("version") = 1;
 char _license[] SEC("license") = "GPL";
 
 struct {
-	__u32 type;
-	__u32 map_flags;
-	int *key;
-	__u64 *value;
-} bpf_next_dump SEC(".maps") = {
-	.type = BPF_MAP_TYPE_SK_STORAGE,
-	.map_flags = BPF_F_NO_PREALLOC,
-};
+        __uint(type, BPF_MAP_TYPE_SK_STORAGE);
+        __uint(map_flags, BPF_F_NO_PREALLOC);
+        __type(key, int);
+        __type(value, u64*);
+} bpf_next_dump SEC(".maps");
+
 
 SEC("sockops")
 int _sockops(struct bpf_sock_ops *ctx)
