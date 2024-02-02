@@ -17,6 +17,7 @@ tprogs-y += tracex2
 tprogs-y += tracex3
 tprogs-y += tracex4
 tprogs-y += tracex5
+tprogs-y += test_fentry_user
 tprogs-y += tracex6
 tprogs-y += tracex7
 tprogs-y += test_probe_write_user
@@ -101,6 +102,7 @@ xdp_router_ipv4-objs := xdp_router_ipv4_user.o $(XDP_SAMPLE)
 
 # Tell kbuild to always build the programs
 always-y := $(tprogs-y)
+always-y += test_fentry_kern.o
 always-y += sockex1_kern.o
 always-y += sockex2_kern.o
 always-y += sockex3_kern.o
